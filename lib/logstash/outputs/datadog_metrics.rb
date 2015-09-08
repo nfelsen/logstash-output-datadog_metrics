@@ -3,7 +3,8 @@ require "logstash/outputs/base"
 require "logstash/namespace"
 require "logstash/json"
 require "stud/buffer"
-
+require "dogapi"
+require "rubygems"
 
 # This output lets you send metrics to
 # DataDogHQ based on Logstash events.
@@ -48,15 +49,10 @@ module LogStash module Outputs class DatadogMetrics < LogStash::Outputs::Base
   public
 
   def register
-    require "net/https"
-    require "uri"
 
-    @url = "https://app.datadoghq.com/api/v1/series"
-    @uri = URI.parse(@url)
-    @client = Net::HTTP.new(@uri.host, @uri.port)
-    @client.use_ssl = true
-    @client.verify_mode = OpenSSL::SSL::VERIFY_NONE
-    @logger.debug("Client", :client => @client.inspect)
+    @dog = Dogapi::Client.new(@api_key)
+
+    @logger.debug("Dog", :dog => @dog)
     buffer_initialize(
       :max_items => @queue_size,
       :max_interval => @timeframe,
@@ -75,8 +71,6 @@ module LogStash module Outputs class DatadogMetrics < LogStash::Outputs::Base
     dd_metrics['points'] = [[to_epoch(event.timestamp), event.sprintf(@metric_value).to_f]]
     dd_metrics['type'] = event.sprintf(@metric_type)
     dd_metrics['host'] = event.sprintf(@host)
-    dd_metrics['device'] = event.sprintf(@device)
-
     if @dd_tags
       tagz = @dd_tags.collect {|x| event.sprintf(x) }
     else
@@ -93,17 +87,11 @@ module LogStash module Outputs class DatadogMetrics < LogStash::Outputs::Base
     dd_series = Hash.new
     dd_series['series'] = Array(events).flatten
 
-    request = Net::HTTP::Post.new("#{@uri.path}?api_key=#{@api_key}")
-
-    begin
-      request.body = series_to_json(dd_series)
-      request.add_field("Content-Type", 'application/json')
-      response = @client.request(request)
-      @logger.info("DD convo", :request => request.inspect, :response => response.inspect)
-      raise unless response.code == '202'
-    rescue Exception => e
-      @logger.warn("Unhandled exception", :request => request.inspect, :response => response.inspect, :exception => e.inspect)
-    end
+    dog.batch_metrics do
+      events.each { |e|
+        dog.emit_point(e)
+      }
+    done
   end # def flush
 
   private
